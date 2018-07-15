@@ -1,3 +1,19 @@
+const PromiseCallback = function(callback, func) {
+    return new Promise((resolve, reject) => {
+        func((result) => {
+            resolve(result);
+            if (typeof callback == 'function') {
+                callback(null, result);
+            }
+        }, (error) => {
+            reject(error);
+            if (typeof callback == 'function') {
+                callback(error);
+            }
+        })
+    });
+};
+
 module.exports = function AssetHelper(options) {
     var opt = options;
     if (!opt.endpoint) throw new Error("endpoint is not set");
@@ -5,69 +21,90 @@ module.exports = function AssetHelper(options) {
     if (!opt.secretAccessKey) throw new Error("secretAccessKey is not set");
     if (!opt.bucketName) throw new Error("bucketName is not set");
 
-    
-    var publicDefault = null;
-    if (opt.publicDefault) {
-        publicDefault = opt.publicDefault;
-    }
-
     var AWS = require('aws-sdk');
-    var async = require('async');
     var bucketName = opt.bucketName;
     AWS.config.accessKeyId = opt.accessKeyId;
     AWS.config.secretAccessKey = opt.secretAccessKey;
     var endpoint = new AWS.Endpoint(opt.endpoint);
     var s3 = new AWS.S3({endpoint: endpoint});
 
+    const getBaseParameters = function(path) {
+        let patharr = path.split('/');
+        let filename = patharr.pop();
+        let filepath = patharr.join('/')
+
+        return {
+            Bucket: bucketName + filepath,
+            Key: filename
+        };
+    };
+
     return {
         _s3: s3,
         bucketName: bucketName,
     
-        upload: function(options, callback) {
-            var opt = options;
-            var filedata = opt.data;
-            var filename = opt.name;
-            var filepath = opt.path;
-            var mime = opt.mime;
-            var public = opt.public !== undefined ? opt.public : publicDefault;
-            var meta = opt.meta;
+        uploadData: function({ path, data, mime=null, meta=null, public=false }, cb) {
+            return new PromiseCallback(cb, (resolve, reject) => {
 
-            if (!filedata || !filename || !filepath) throw new Error('One of required parameters missing');
+                let base64data = Buffer.from(data, 'binary');
+    
+                let param = getBaseParameters(path);
+                param['Body'] = base64data;
 
-            var base64data = new Buffer(filedata, 'binary');
-
-            var param = {
-                Bucket: scope.bucketName + filepath,
-                Key: filename,
-                Body: base64data
-            };
-            
-            if (mime) {
-                param['ContentType'] = mime;
-            }
-            if (meta) {
-                param['Metadata'] = meta;
-            }
-            if (public) {
-                param['ACL'] = public ? 'public-read' : 'private';
-            }
-
-            s3.putObject(param, function(err, data) {
-                if (err) return callback(err);
-                callback(null);
+                if (mime) {
+                    param['ContentType'] = mime;
+                }
+                if (meta) {
+                    param['Metadata'] = meta;
+                }
+                if (public) {
+                    param['ACL'] = public ? 'public-read' : 'private';
+                }
+    
+                s3.putObject(param, function(err, data) {
+                    if (err) {
+                        reject(err);
+                        return;
+                    }
+                    resolve();
+                });
             });
         },
-    
-        download: function(file, callback) {
-    
+
+        uploadFile: function({ source, path, mime=null, meta=null, public=false }, cb) {
+            return new PromiseCallback(cb, async (resolve, reject) => {
+                const fs = require('fs-extra');
+                try {
+                    if (mime == null) {
+                        const mimelib = require('mime');
+                        mime = mimelib.getType(path);
+                    }
+
+                    const data = await fs.readFile(source, 'utf8');
+                    return this.uploadData({
+                        data,
+                        path,
+                        mime,
+                        meta,
+                        public,
+                    });
+                } catch(e) {
+                    reject(e);
+                }
+            });
         },
 
-        metadata: function(file, callback) {
-
-        },
-    
-        exists: function(file, callback) {
-    
+        removeFile: function({ path }, cb) {
+            return new PromiseCallback(cb, (resolve, reject) => {
+                let param = getBaseParameters(path);
+                s3.deleteObject(param, (err) => {
+                    if (err) {
+                        reject(err);
+                        return;
+                    }
+                    resolve();
+                });
+            });
         }
     };
 };
